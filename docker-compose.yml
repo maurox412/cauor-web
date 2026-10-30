@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cauor
+      POSTGRES_PASSWORD: cauor_dev
+      POSTGRES_DB: cauor
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - cauor_pg:/var/lib/postgresql/data
+volumes:
+  cauor_pg:

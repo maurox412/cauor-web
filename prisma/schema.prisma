@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Rol            { COLEGIADO ADMIN }
+enum EstadoColegiado { ACTIVO PASIVO INACTIVO }
+enum EstadoCuota    { PENDIENTE EN_REVISION PAGADA }
+enum EstadoPago     { EN_REVISION VALIDADO RECHAZADO }
+enum TipoPago       { MENSUALIDAD TIENDA }
+enum EstadoPedido   { PENDIENTE_PAGO EN_REVISION PAGADO ENTREGADO CANCELADO }
+enum TipoOrgano     { DIRECTORIO TRIBUNAL_HONOR CONSEJO_TECNICO }
+enum TipoQr         { MENSUALIDADES TIENDA }
+enum Genero         { VARON MUJER UNISEX }
+
+model Usuario {
+  id               String    @id @default(cuid())
+  // Colegiados: iniciales en mayúsculas + registro CAUOR (ej. MFAQ0123). Se genera una vez y NO se cambia.
+  username         String    @unique
+  passwordHash     String
+  rol              Rol
+  activo           Boolean   @default(true)
+  debeCambiarClave Boolean   @default(true)
+  intentosFallidos Int       @default(0)
+  bloqueadoHasta   DateTime?
+  ultimoAcceso     DateTime?
+  creadoEn         DateTime  @default(now())
+
+  colegiado  Colegiado?
+  auditorias Auditoria[]
+  pagosValidados Pago[]  @relation("ValidadoPor")
+  importaciones  Importacion[]
+  permisos       PermisoAdmin?
+}
+
+model Colegiado {
+  id              String          @id @default(cuid())
+  usuarioId       String          @unique
+  usuario         Usuario         @relation(fields: [usuarioId], references: [id])
+  nombres         String
+  apellidoPaterno String
+  apellidoMaterno String
+  ci              String          @unique
+  registroCauor   String          @unique
+  registroCaub    String?
+  fechaTitulo     DateTime        @db.Date
+  fechaProvision  DateTime?       @db.Date
+  estado          EstadoColegiado @default(ACTIVO)
+  fotoPath        String?
+  email           String?
+  telefono        String?
+  telefono2       String?
+  direccion       String?
+  visibleEnGuia   Boolean         @default(true)
+  // El colegiado elige qué datos de contacto se ven en su perfil público de la Guía
+  mostrarEmail     Boolean        @default(true)
+  mostrarTelefono  Boolean        @default(true)
+  mostrarTelefono2 Boolean        @default(true)
+  mostrarDireccion Boolean        @default(false)
+  creadoEn        DateTime        @default(now())
+  actualizadoEn   DateTime        @updatedAt
+
+  cuotas  Cuota[]
+  pagos   Pago[]
+  pedidos Pedido[]
+
+  @@index([apellidoPaterno, apellidoMaterno])
+  @@index([registroCaub])
+}
+
+// Una cuota por colegiado y mes. El monto se guarda al generarla:
+// cambiar el monto de la mensualidad no altera las cuotas ya generadas.
+model Cuota {
+  id          String      @id @default(cuid())
+  colegiadoId String
+  colegiado   Colegiado   @relation(fields: [colegiadoId], references: [id])
+  periodo     String      // AAAA-MM
+  monto       Decimal     @db.Decimal(10, 2)
+  estado      EstadoCuota @default(PENDIENTE)
+  pagoId      String?
+  pago        Pago?       @relation(fields: [pagoId], references: [id])
+
+  @@unique([colegiadoId, periodo])
+  @@index([estado])
+}
+
+model Pago {
+  id              String     @id @default(cuid())
+  colegiadoId     String
+  colegiado       Colegiado  @relation(fields: [colegiadoId], references: [id])
+  tipo            TipoPago
+  montoTotal      Decimal    @db.Decimal(10, 2)
+  comprobantePath String
+  comprobanteHash String     @unique // evita subir dos veces el mismo comprobante
+  estado          EstadoPago @default(EN_REVISION)
+  observacion     String?
+  validadoPorId   String?
+  validadoPor     Usuario?   @relation("ValidadoPor", fields: [validadoPorId], references: [id])
+  validadoEn      DateTime?
+  creadoEn        DateTime   @default(now())
+
+  cuotas Cuota[]
+  pedido Pedido?
+
+  @@index([estado, tipo])
+}
+
+model Producto {
+  id          String   @id @default(cuid())
+  nombre      String
+  descripcion String?
+  precio      Decimal  @db.Decimal(10, 2)
+  stock       Int      @default(0)
+  imagenPath  String?
+  activo      Boolean  @default(true)
+  // true = chamarras y prendas: se elige género y talla, y cada combinación tiene su propio stock
+  pideGeneroTalla Boolean @default(false)
+
+  variantes VarianteProducto[]
+  items     PedidoItem[]
+}
+
+model Pedido {
+  id          String       @id @default(cuid())
+  colegiadoId String
+  colegiado   Colegiado    @relation(fields: [colegiadoId], references: [id])
+  pagoId      String?      @unique
+  pago        Pago?        @relation(fields: [pagoId], references: [id])
+  estado      EstadoPedido @default(PENDIENTE_PAGO)
+  total       Decimal      @db.Decimal(10, 2)
+  creadoEn    DateTime     @default(now())
+
+  items PedidoItem[]
+}
+
+model PedidoItem {
+  id             String   @id @default(cuid())
+  pedidoId       String
+  pedido         Pedido   @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  productoId     String
+  producto       Producto @relation(fields: [productoId], references: [id])
+  cantidad       Int
+  precioUnitario Decimal  @db.Decimal(10, 2)
+  varianteId     String?
+  variante       VarianteProducto? @relation(fields: [varianteId], references: [id])
+  genero         Genero?
+  talla          String?
+}
+
+// Los dos códigos QR: uno para mensualidades y otro para la tienda.
+model ConfigQr {
+  tipo          TipoQr   @id
+  imagenPath    String?
+  banco         String?
+  titular       String?
+  cuenta        String?
+  actualizadoEn DateTime @updatedAt
+}
+
+// Valores editables: montoMensualidad, mision, vision.
+model Ajuste {
+  clave         String   @id
+  valor         String
+  actualizadoEn DateTime @updatedAt
+}
+
+// Directorio, Tribunal de Honor y Consejo Técnico: foto general + miembros.
+model Organo {
+  tipo     TipoOrgano @id
+  fotoPath String?
+  miembros Miembro[]
+}
+
+model Miembro {
+  id       String     @id @default(cuid())
+  organoId TipoOrgano
+  organo   Organo     @relation(fields: [organoId], references: [tipo], onDelete: Cascade)
+  nombre   String
+  cargo    String
+  fotoPath String?
+  orden    Int        @default(0)
+}
+
+
+model EventoCurso {
+  id         String   @id @default(cuid())
+  titulo     String
+  fecha      DateTime
+  lugar      String?
+  horario    String?
+  afichePath String?
+  publicado  Boolean  @default(true)
+}
+
+model Noticia {
+  id         String   @id @default(cuid())
+  titulo     String
+  fecha      DateTime
+  imagenPath String?
+  publicado  Boolean  @default(true)
+}
+
+model Banner {
+  id         String  @id @default(cuid())
+  titulo     String
+  texto      String?
+  boton      String?
+  enlace     String?
+  imagenPath String?
+  orden      Int     @default(0)
+  activo     Boolean @default(true)
+}
+
+// Importación masiva de colegiados desde Excel/CSV.
+model Importacion {
+  id          String   @id @default(cuid())
+  adminId     String
+  admin       Usuario  @relation(fields: [adminId], references: [id])
+  archivo     String
+  filasOk     Int
+  filasError  Int
+  log         Json?
+  creadoEn    DateTime @default(now())
+}
+
+model Auditoria {
+  id        String   @id @default(cuid())
+  usuarioId String?
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id])
+  accion    String
+  entidad   String
+  entidadId String?
+  detalle   Json?
+  ip        String?
+  creadoEn  DateTime @default(now())
+
+  @@index([entidad, entidadId])
+}
+
+// Colegiado autorizado como administrador delegado: solo ve las áreas marcadas.
+// Gestión de colegiados, QR, monto de mensualidad y delegados quedan solo para el rol ADMIN.
+model PermisoAdmin {
+  usuarioId String  @id
+  usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  galeria   Boolean @default(false)
+  cursos    Boolean @default(false)
+  tienda    Boolean @default(false)
+  pagos     Boolean @default(false)
+}
+
+// Un álbum por evento, con varias fotos.
+model Album {
+  id       String      @id @default(cuid())
+  titulo   String
+  anio     Int
+  creadoEn DateTime    @default(now())
+  fotos    FotoAlbum[]
+
+  @@index([anio])
+}
+
+model FotoAlbum {
+  id         String @id @default(cuid())
+  albumId    String
+  album      Album  @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  imagenPath String
+  orden      Int    @default(0)
+}
+
+// Stock por género y talla (chamarras, polos, etc.)
+model VarianteProducto {
+  id         String       @id @default(cuid())
+  productoId String
+  producto   Producto     @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  genero     Genero
+  talla      String
+  stock      Int          @default(0)
+  items      PedidoItem[]
+
+  @@unique([productoId, genero, talla])
+}

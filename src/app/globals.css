@@ -1,0 +1,6 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { @apply bg-white text-slate-800 font-sans; }
+h1, h2, h3 { @apply font-serif; }
